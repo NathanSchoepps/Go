@@ -1,104 +1,141 @@
 package handlers
 
 import (
-	"fmt"
+	"bytes"
+	"encoding/json"
+	"example/bookstore/models"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
-
-	"example/bookstore/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
-// TestGetBooks tests the GetBooks handler
+// Mock de la couche modèle pour isoler les tests
+type MockModel struct {
+	mock.Mock
+}
+
+func (m *MockModel) GetBooks() ([]models.Book, error) {
+	args := m.Called()
+	return args.Get(0).([]models.Book), args.Error(1)
+}
+
+func (m *MockModel) GetBookByID(id string) (models.Book, error) {
+	args := m.Called(id)
+	return args.Get(0).(models.Book), args.Error(1)
+}
+
+func (m *MockModel) AddBook(b *models.Book) error {
+	args := m.Called(b)
+	return args.Error(0)
+}
+
 func TestGetBooks(t *testing.T) {
-	// Setup Gin router
-	router := gin.Default()
-	router.GET("/books", GetBooks)
+	gin.SetMode(gin.TestMode)
 
-	// Mock the GetBooks function in models
-	models.GetBooks = func() ([]models.Book, error) {
-		return []models.Book{
-			{ID: 1, Title: "1984", Author: "George Orwell", Price: 9.99},
-			{ID: 2, Title: "To Kill a Mockingbird", Author: "Harper Lee", Price: 7.99},
-		}, nil
+	mockModel := new(MockModel)
+	mockBooks := []models.Book{
+		{ID: 1, Title: "Book One", Author: "Author One", Price: 10.99},
+		{ID: 2, Title: "Book Two", Author: "Author Two", Price: 12.99},
 	}
 
-	// Create a request to send to the endpoint
-	req, _ := http.NewRequest(http.MethodGet, "/books", nil)
-	w := httptest.NewRecorder()
+	mockModel.On("GetBooks").Return(mockBooks, nil)
 
-	// Perform the request
-	router.ServeHTTP(w, req)
-
-	// Assert the response
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "1984")
-	assert.Contains(t, w.Body.String(), "To Kill a Mockingbird")
-}
-
-// TestGetBookByID tests the GetBookByID handler
-func TestGetBookByID(t *testing.T) {
-	// Setup Gin router
 	router := gin.Default()
-	router.GET("/books/:id", GetBookByID)
-
-	// Mock the GetBookByID function in models
-	models.GetBookByID = func(id string) (models.Book, error) {
-		if id == "1" {
-			return models.Book{ID: 1, Title: "1984", Author: "George Orwell", Price: 9.99}, nil
+	c := router.Group("/")
+	c.GET("/books", func(c *gin.Context) {
+		books, err := mockModel.GetBooks()
+		if err != nil {
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
 		}
-		return models.Book{}, fmt.Errorf("book not found")
-	}
+		c.IndentedJSON(http.StatusOK, books)
+	})
 
-	// Test for an existing book
-	req, _ := http.NewRequest(http.MethodGet, "/books/1", nil)
 	w := httptest.NewRecorder()
-
-	// Perform the request
+	req, _ := http.NewRequest("GET", "/books", nil)
 	router.ServeHTTP(w, req)
 
-	// Assert the response
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, w.Body.String(), "1984")
-
-	// Test for a non-existent book
-	req, _ = http.NewRequest(http.MethodGet, "/books/999", nil)
-	w = httptest.NewRecorder()
-
-	// Perform the request
-	router.ServeHTTP(w, req)
-
-	// Assert the response
-	assert.Equal(t, http.StatusNotFound, w.Code)
-	assert.Contains(t, w.Body.String(), "Book not found")
+	var books []models.Book
+	err := json.Unmarshal(w.Body.Bytes(), &books)
+	assert.NoError(t, err)
+	assert.Equal(t, mockBooks, books)
 }
 
-// TestPostBooks tests the PostBooks handler
-func TestPostBooks(t *testing.T) {
-	// Setup Gin router
+func TestGetBookByID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mockModel := new(MockModel)
+	mockBook := models.Book{ID: 1, Title: "Book One", Author: "Author One", Price: 10.99}
+
+	mockModel.On("GetBookByID", "1").Return(mockBook, nil)
+
 	router := gin.Default()
-	router.POST("/books", PostBooks)
+	c := router.Group("/")
+	c.GET("/books/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		book, err := mockModel.GetBookByID(id)
+		if err != nil {
+			if err.Error() == "book not found" {
+				c.IndentedJSON(http.StatusNotFound, gin.H{"message": "Book not found"})
+			} else {
+				c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			}
+			return
+		}
+		c.IndentedJSON(http.StatusOK, book)
+	})
 
-	// Mock the AddBook function in models
-	models.AddBook = func(book *models.Book) error {
-		book.ID = 3 // Assume ID is auto-incremented to 3
-		return nil
-	}
-
-	// Create a request to send to the endpoint
-	body := `{"title": "Brave New World", "author": "Aldous Huxley", "price": 8.99}`
-	req, _ := http.NewRequest(http.MethodPost, "/books", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-
-	// Perform the request
+	req, _ := http.NewRequest("GET", "/books/1", nil)
 	router.ServeHTTP(w, req)
 
-	// Assert the response
+	assert.Equal(t, http.StatusOK, w.Code)
+	var book models.Book
+	err := json.Unmarshal(w.Body.Bytes(), &book)
+	assert.NoError(t, err)
+	assert.Equal(t, mockBook, book)
+}
+
+func TestPostBooks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mockModel := new(MockModel)
+	newBook := models.Book{Title: "New Book", Author: "New Author", Price: 15.99}
+
+	mockModel.On("AddBook", &newBook).Return(nil)
+
+	router := gin.Default()
+	c := router.Group("/")
+	c.POST("/books", func(c *gin.Context) {
+		var newBook models.Book
+		if err := c.BindJSON(&newBook); err != nil {
+			c.IndentedJSON(http.StatusBadRequest, gin.H{"message": "Invalid request payload"})
+			return
+		}
+
+		if err := mockModel.AddBook(&newBook); err != nil {
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		c.IndentedJSON(http.StatusCreated, newBook)
+	})
+
+	body, _ := json.Marshal(newBook)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/books", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
 	assert.Equal(t, http.StatusCreated, w.Code)
-	assert.Contains(t, w.Body.String(), "Brave New World")
+	var createdBook models.Book
+	err := json.Unmarshal(w.Body.Bytes(), &createdBook)
+	assert.NoError(t, err)
+	assert.Equal(t, newBook.Title, createdBook.Title)
+	assert.Equal(t, newBook.Author, createdBook.Author)
+	assert.Equal(t, newBook.Price, createdBook.Price)
 }
